@@ -1,0 +1,205 @@
+---
+title: 'Component 4: Commute times with ATUS'
+output:
+  html_document:
+    df_print: paged
+---
+
+##Purpose
+The purpose of this model is to explore relationships between commute time and other respondent characteristics, such as income, age, and time spent with family. Commute time is difficult to change, potentially impacting other aspects of their lives such as time spent with friends or family. By applying the algorithm, I may be able to learn about patterns tin commute times. For example, is a longer commute time a socioeconomic burden or are long commutes associated with more valuable employment? 
+
+##Data
+I use data from the [2017 American Time Use Survey Data](https://www.bls.gov/tus/datafiles_2017.htm), specifically the activity, roster, and respondent files.  I restricted the dataset to respondents who identified the type of vehicle for their commute (bus, train, walking, car). First, I clustered commutes by characteristics (time, duration, type). Then I added up their total commute time for the day and used that as the outcome variable for a predictive model. No other transformations were made to the data.   
+
+##Limits on validity and generalizability
+This model has some weakness in validity and generalizability. The American Time Use survey was not designed to measure commute details, so an assumption has been made that "work related travel" indicates a daily commute for the majority of participants. Also, problems with the reporting of location during the commute mean that of the 10,000 or so participants, only a few thousand were included in a nonrandom manner. However the sample size is still relatively large and comes from a representative sample of the US population, so that patterns found here would be a good starting point for further investigation.
+
+##Outcome: no strong relationship
+That said, the most interesting part of the model is that no strong pattern emerges. In this dataset, the independent variables included in the model (age, hourly wage, weeks worked per year, time with family, time alone, number of children) do not strongly predict how long an individual commutes per day. This may suggest that people in different age and income groups generally agree on an acceptable commute time, and either choose their home based on their work or their work based on their home. Many variables in this dataset remain unexplored, however, and there may be undiscovered relationships.
+
+
+
+```{r}
+# load libraries
+
+library(kernlab)
+library(dbscan)
+library(diceR) # For cluster analysis and ensemble cluster
+library(clValid) # For cluster analysis and validation measures
+library(pander) # For tables
+library(ggpubr)
+library(tidyverse)
+library(checkpoint)
+library(lmSupport)
+library(ggplot2)
+library(ggExtra)
+library(chron)
+library(caret)
+
+```
+
+
+```{r}
+# load data
+
+# activity data
+d = read.delim("atusact_2017.dat", header = TRUE, sep =",")
+
+#convert times to times
+d$TUSTARTTIM = chron(times.= d$TUSTARTTIM, format = "hh:mm:ss")
+d$TUSTOPTIME = chron(times.= d$TUSTOPTIME, format = "hh:mm:ss")
+
+# filter to commutes
+wktrav = c(180501, 180502, 180503)
+
+d = filter(d, d$TRCODE %in% wktrav)
+
+
+# now filter by type of travel
+# Count  Code  Description
+# 4619     12	 Car, truck, or motorcycle (driver)
+#  260     13	 Car, truck, or motorcycle (passenger)
+#  354     14	 Walking
+#  104     15	 Bus
+#  105     16	 Subway/train
+
+# Add column DRIVER for driver of car, truck, motorcycle
+d$DRIVER = 0
+d$DRIVER[d$TEWHERE == 12] = 1
+
+# Add column PSNGR for passenger in car, truck, motorcycle
+d$PSNGR = 0
+d$PSNGR[d$TEWHERE == 13] = 1
+
+# Add column WALK 
+d$WALK = 0
+d$WALK[d$TEWHERE == 14] = 1
+
+# Add column BSTR for Bus or Train or Subway
+d$BSTR = 0
+d$BSTR[d$TEWHERE %in% c(15,16)] = 1
+
+# Add a column TRAVTYPE where 1 = walk, 2 = Bus/train, 3 = passenger, 4 = car/truck/motorbike
+d$TRAVTYPE = 0
+d$TRAVTYPE[d$TEWHERE == 12] = 4
+d$TRAVTYPE[d$TEWHERE == 13] = 3
+d$TRAVTYPE[d$TEWHERE == 14] = 1
+d$TRAVTYPE[d$TEWHERE %in% c(15,16)] = 2
+d$TRAVTYPE = factor(d$TRAVTYPE)
+levels(d$TRAVTYPE) = c("none", "Walk", "BusTrain", "Passenger", "Driver")
+
+# remove datapoints that aren't in one of your 4 transport groups
+d = d[d$TRAVTYPE %in% c("Walk", "BusTrain", "Passenger", "Driver"), ]
+
+plot(d$TRAVTYPE)
+str(d)
+
+# Ok, now let's bring in the demographic information
+
+# Respondent info!
+dresp = read.delim("atusresp_2017.dat", header = TRUE, sep =",")
+
+# Roster info -- need this to get age!
+drost = read.delim("atusrost_2017.dat", header = TRUE, sep =",")
+
+# Filter out just the respondents, remove their household members -- TULINENO = 1
+drost = filter(drost, TULINENO == 1)
+# we want their age
+dage = select(drost, TUCASEID, TEAGE)
+
+# join age and respondent info with the activity data
+d = left_join(d, dage, by = "TUCASEID")
+d = left_join(d, dresp, by = "TUCASEID")
+
+
+# filter to people who are employed
+# value of 1 or 2 for TELFS (labor force status)
+# d = filter(d, d$TELFS %in% c(1,2))
+
+```
+
+```{r}
+# cluster
+
+# which variables are we interested in
+col3 = c('TUACTDUR', 'TUSTARTTIM','TUSTOPTIME', "DRIVER", "PSNGR", "WALK", "BSTR")
+
+# Build a kmeans model
+# scale the variables related to the clustering
+dscale = d
+dscale[, col3] = scale(d[,col3])
+
+# kmeans
+d$km.cluster  =  kmeans(dscale[, col3], centers = 6)$cluster %>%
+  as.factor()
+
+
+
+```
+
+
+```{r}
+# cluster visualizations
+
+# plot start and end times
+times.plot = ggplot(d, aes(TUSTARTTIM, TUSTOPTIME, colour = km.cluster)) + 
+  geom_point() +
+  theme_bw() 
+ggMarginal(times.plot, type="histogram")
+
+
+
+```
+
+
+```{r}
+
+# plot start time and travel type
+types.plot = ggplot(d, aes(TUSTARTTIM, TRAVTYPE, colour = km.cluster)) + 
+  geom_point() +
+  theme_bw() +
+  geom_jitter(stat = "identity",
+              height = 0.25) +
+  labs(title = "Clusters by Start Time and Travel Type", xlab = "Start time of work travel", ylab = "Travel type")
+
+ggMarginal(types.plot, type="histogram", margins = "x")
+
+```
+
+
+
+```{r}
+
+# plot duration and stop time
+dur.plot = ggplot(d, aes(TUACTDUR, TUSTOPTIME, colour = km.cluster)) + 
+  geom_point() +
+  theme_bw() +
+  geom_jitter(stat = "identity",
+              height = 0.25) +
+  labs(title = "Clusters by Travle Duration and Stop Time", xlab = "Stop Time", ylab = "Travel Duration")
+
+ggMarginal(dur.plot, type="histogram")
+```
+
+```{r}
+
+# Now let's see if these clusters of commute categories show differences in age or hourly wage
+
+# wage of clusters
+wage.plot = ggplot(d[d$TRERNHLY > 0,], aes(TRERNHLY, TEAGE, colour = km.cluster)) + 
+  geom_point() +
+  theme_bw() +
+  # geom_jitter(stat = "identity",
+  #             height = 0.25) +
+  labs(title = "Clusters by Age and Hourly Wage", xlab = "Hourly Earnings", ylab = "Travel type")
+
+ggMarginal(wage.plot, type="histogram", margins = "both")
+
+
+```
+
+There is no trend cluster assignment related to age or hourly earnings.
+
+Next steps is to explore predictive models to see if there are any patterns there.
+
+
