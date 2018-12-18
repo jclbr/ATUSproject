@@ -6,16 +6,16 @@ output:
 ---
 
 ##Purpose
-The purpose of this model is to explore relationships between commute time and other respondent characteristics, such as income, age, and time spent with family. Commute time is difficult to change, potentially impacting other aspects of their lives such as time spent with friends or family. By applying the algorithm, I may be able to learn about patterns tin commute times. For example, is a longer commute time a socioeconomic burden or are long commutes associated with more valuable employment? 
+The purpose of this model is to explore relationships between commute time and other respondent characteristics, such as income, age, and time spent with family. Commute time has the potential to negatively impact mental health and take time away from other aspects of a person's life such as time spent with friends or family. I apply both unsupervised and supervised learning to look for possible biases in commmute time. For example, is a longer commute time a socioeconomic burden or are long commutes associated with more valuable employment? 
 
 ##Data
-I use data from the [2017 American Time Use Survey Data](https://www.bls.gov/tus/datafiles_2017.htm), specifically the activity, roster, and respondent files.  I restricted the dataset to respondents who identified the type of vehicle for their commute (bus, train, walking, car). First, I clustered commutes by characteristics (time, duration, type). Then I added up their total commute time for the day and used that as the outcome variable for a predictive model. No other transformations were made to the data.   
+I use data from the [2017 American Time Use Survey Data](https://www.bls.gov/tus/datafiles_2017.htm), specifically the activity, roster, and respondent files.  I restricted the dataset to respondents who identified the type of vehicle for their commute (bus, train, walking, car), which resulted in 5386 observations included out of 10,223 in the full dataset. First, I clustered commutes by characteristics (time, duration, type). I joined commute data to respondent data to calculate total commute time per person per day and used that as the outcome variable for a predictive model. Attributes were chosen for the predictive model based on relevance to quality of life or socioeconomic status, and then filtered for data coverage. Data covereage brought the sample size to 1324 participants. No other transformations were made to the data.   
 
 ##Limits on validity and generalizability
-This model has some weakness in validity and generalizability. The American Time Use survey was not designed to measure commute details, so an assumption has been made that "work related travel" indicates a daily commute for the majority of participants. Also, problems with the reporting of location during the commute mean that of the 10,000 or so participants, only a few thousand were included in a nonrandom manner. However the sample size is still relatively large and comes from a representative sample of the US population, so that patterns found here would be a good starting point for further investigation.
+This model has some weakness in validity and generalizability. The American Time Use survey was not designed to measure commute details, so an assumption has been made that "work related travel" indicates a daily commute for the majority of participants. Also, problems with the reporting of location during the commute mean that of the 10,000 or so participants, only 5386 were included in the clustering and 1324 in the predictive model in a nonrandom manner. However the sample size is still relatively large and comes from a representative sample of the US population, so that patterns found here would be a good starting point for further investigation.
 
 ##Outcome: no strong relationship
-That said, the most interesting part of the model is that no strong pattern emerges. In this dataset, the independent variables included in the model (age, hourly wage, weeks worked per year, time with family, time alone, number of children) do not strongly predict how long an individual commutes per day. This may suggest that people in different age and income groups generally agree on an acceptable commute time, and either choose their home based on their work or their work based on their home. Many variables in this dataset remain unexplored, however, and there may be undiscovered relationships.
+The most interesting part of the model is that no strong pattern emerges. Clusters do not appear to show patterns in age or hourly wage. The independent variables included in the model (age, hourly wage, weeks worked per year, time with family, time alone, number of children) do not strongly predict how long an individual commutes per day. This may suggest that people in different age and income groups generally agree on an acceptable commute time, and either choose their home based on their work or their work based on their home. Many variables in this dataset remain unexplored, however, and there may be undiscovered relationships.
 
 
 
@@ -198,8 +198,145 @@ ggMarginal(wage.plot, type="histogram", margins = "both")
 
 ```
 
-There is no trend cluster assignment related to age or hourly earnings.
+There is no trend in cluster assignment related to age or hourly earnings.
 
-Next steps is to explore predictive models to see if there are any patterns there.
+```{r}
+# Predict total commute time
 
+# Sum commute time per respondent
+
+totdur = d %>%
+  group_by(TUCASEID) %>%
+  summarise(tot = sum(TUACTDUR), travcount = n())
+
+# join on demographics and other... stuff
+totdur = left_join(totdur, dage, by = "TUCASEID")
+totdur = left_join(totdur, dresp, by = "TUCASEID")
+
+
+
+```
+
+
+```{r}
+# cleaning the data
+
+# Ok, we have some columns of interest but the data needs to be cleaned. A value of -1 indicates missing data.
+
+
+# First let's take care of spouse working hours!
+# if they have no spouse their spouse works 0 hours
+totdur$TESPUHRS[totdur$TRSPPRES == 3] = 0
+
+# If their spouse is not employed their spouse works 0 hours
+totdur$TESPUHRS[totdur$TESPEMPNOT == 2] = 0
+
+# Let's check on what's left
+hist(totdur$TESPUHRS[totdur$TESPUHRS < 10])
+# ok let's remove the spouses with varying hours
+totdur = filter(totdur, totdur$TESPUHRS >= 0)
+
+# Next, let's take care of total hours usually worked per week
+hist(totdur$TEHRUSLT)
+totdur = filter(totdur, totdur$TEHRUSLT >= 0)
+
+# Next hourly earnings! There's no way except to remove data points without data
+totdur = filter(totdur, totdur$TRERNHLY >= 0)
+
+# We're left with 1324 observations out of 10,000.
+
+# Ok let's cut totdur down only to the columns we want in the model
+colt = c('TUCASEID',  "tot", "TEAGE",	'TEHRUSLT',	'TESPUHRS',	'TRCHILDNUM', 'TRERNHLY',
+         'TRTALONE',	'TRTCHILD',	'TRTFAMILY',	'TRTFRIEND')
+
+totdur = totdur[,colt]
+
+varDescribe(totdur)
+
+#interested variables
+# tot          total commute
+# TEAGE        age
+# TEHRUSLT     hours worked per week
+# TESPUHRS     spouse hours
+# TRCHILDNUM   num of children
+# TRERNHLY     hourly wage
+# TRTALONE     time alone
+# TRTCHILD     time with kids
+# TRTFAMILY    time with family
+# TRTFRIEND    time with friends
+
+```
+
+
+```{r}
+#Partition Data into Training and Testing
+
+# creates a vector of which rows are in the test group
+inTrain = createDataPartition(totdur$tot, p = 4/5, list = FALSE)
+
+# pull out the test data for every variable except the one you're predicting
+trainDescr =totdur[inTrain,] # All but class variable
+testDescr = totdur[-inTrain,]
+
+```
+
+
+```{r}
+## Linear regression
+lm.fit = train(tot ~ ., data = trainDescr,
+               method = "lm",
+               trControl = trainControl(method = "repeatedcv", number = 10, repeats = 5))
+print(lm.fit)
+
+## xgboost
+xgb.fit = train(tot ~ ., data = trainDescr,
+                method = "xgbTree",
+                trControl = trainControl(method = "repeatedcv", number = 10, repeats = 5))
+print(xgb.fit)
+```
+
+
+```{r}
+#### Model redictions ####
+
+# xgb
+xgb.pred = predict(xgb.fit, totdur)
+xgbp = data.frame(prediction = xgb.pred, test = totdur$tot)
+ggplot(xgbp, aes(x=prediction, y=test)) + geom_abline(intercept = 0, slope = 1, color = "red") + geom_point() + coord_fixed(ratio = 1, xlim = c(0, 500), ylim = NULL, expand = TRUE,
+  clip = "on") 
+
+
+
+
+
+
+```
+
+
+```{r}
+## Model predictions
+# lm predictions
+lm.pred = predict(lm.fit, totdur)
+lmp = data.frame(prediction = lm.pred, test = totdur$tot)
+ggplot(lmp, aes(x=prediction, y=test)) + geom_point()
+```
+
+
+```{r}
+
+#### Compare models ####
+mod.resamps = resamples(list(xgb = xgb.fit, lm = lm.fit))
+summary(mod.resamps)
+
+xyplot(mod.resamps, what = "BlandAltman")
+
+
+#### Identify important variables ####
+ximp = varImp(xgb.fit )
+
+limp = varImp(lm.fit)
+ ggplot(data = ximp, aes(x= )) + geom_col(stat = "identity") + xlab("XGBoost")
+ggplot(data = limp, aes(x= )) + geom_col(stat = "identity") + xlab("Linear")
+
+```
 
